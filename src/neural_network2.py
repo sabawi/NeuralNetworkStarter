@@ -235,6 +235,19 @@ class NeuralNetwork:
         tokenized = self.tokenizer(texts, padding=True, truncation=True, 
                                   max_length=self.max_seq_length, return_tensors='np')
         return tokenized['input_ids']
+    
+    # def tokenize(self, texts):
+    #     """Tokenize text using HuggingFace tokenizer"""
+    #     encoded = self.tokenizer(
+    #         texts, 
+    #         padding="max_length", 
+    #         truncation=True, 
+    #         max_length=self.max_seq_length, 
+    #         return_tensors="np"
+    #     )
+    #     return encoded["input_ids"]
+    
+    
 
     def predict(self, inputs):
         """Prediction with sequence handling"""
