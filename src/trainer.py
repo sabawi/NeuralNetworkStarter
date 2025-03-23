@@ -10,12 +10,14 @@ layer_sizes = [2, 4, 1]  # Input layer: 2 neurons, Hidden layer: 4 neurons, Outp
 activation_functions = ['leaky_relu', 'sigmoid']  # Use Leaky ReLU in the hidden layer
 
 # Initialize and train the Neural Network
-# Initialize the network
+# Important: Don't include tokenizer_name for simple networks
 nn = NeuralNetwork(
-    layer_sizes,
-    activation_functions,
-    learning_rate=0.2,  # Higher learning rate
-    epochs=5000
+    layer_sizes=layer_sizes, 
+    activation_functions=activation_functions, 
+    learning_rate=0.2, 
+    epochs=10000,
+    batch_size=4,
+    # Remove tokenizer_name - we don't need it for XOR
 )
 
 # Train the Neural Network

@@ -60,7 +60,7 @@ if __name__ == "__main__":
     # Train model
     try:
         logging.info("Starting simplified model training...")
-        model.train(texts, np.array(labels), verbose=True)
+        model.train_sentiment(texts, np.array(labels), verbose=True)
         logging.info("Training completed successfully")
     except Exception as e:
         logging.error(f"Error during training: {e}")

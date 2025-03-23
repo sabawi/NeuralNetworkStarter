@@ -1,6 +1,7 @@
 from neural_network2 import NeuralNetwork
 from sklearn.preprocessing import LabelEncoder
 import numpy as np
+import logging
 
 train_questions = [
     "What is the capital of France?",
@@ -80,32 +81,49 @@ le = LabelEncoder().fit(all_answers)
 train_answers_encoded = le.transform(train_answers)
 test_answers_encoded = le.transform(test_answers)
 
-# Initialize model with proper dimensions
+# Data augmentation - ask the same questions with different phrasing
+augmented_questions = train_questions.copy()
+augmented_answers_encoded = train_answers_encoded.copy()
+
+# Add variations of questions
+augmented_questions.append("What's the capital city of France?")
+augmented_answers_encoded = np.append(augmented_answers_encoded, le.transform(["Paris"]))
+
+augmented_questions.append("What equals 2 plus 2?")
+augmented_answers_encoded = np.append(augmented_answers_encoded, le.transform(["4"]))
+
+augmented_questions.append("Who is the author of Romeo and Juliet?")
+augmented_answers_encoded = np.append(augmented_answers_encoded, le.transform(["William Shakespeare"]))
+
+# Initialize model with simpler architecture
 model = NeuralNetwork(
-    layer_sizes=[768, 128, 256, 512, 512, len(le.classes_)],
-    activation_functions=['relu', 'relu', 'relu', 'relu', 'softmax'],
+    layer_sizes=[768, 256, len(le.classes_)],  # Simplified architecture
+    activation_functions=['relu', 'softmax'],  # Fewer layers
     use_embedding=True,
     vocab_size=30522,
     embed_dim=768,
     max_seq_length=128,
     tokenizer_name='bert-base-uncased',
-    dropout_rate=0.2,
-    learning_rate=0.05,
-    epochs=2000,
-    batch_size=32)
+    dropout_rate=0.1,  # Reduced dropout
+    learning_rate=0.01,  # Increased learning rate
+    epochs=5000,  # Fewer epochs but we'll monitor progress
+    batch_size=8)  # Smaller batch size for better gradient estimates
+
 
 # Train with one-hot encoded labels
-train_answers_onehot = np.eye(len(le.classes_))[train_answers_encoded]
-model.train(train_questions, train_answers_onehot)
+train_answers_onehot = np.eye(len(le.classes_))[augmented_answers_encoded]  # Use augmented data
+model.train_qa(augmented_questions, train_answers_onehot, verbose=True)  # Train with improved method
 
+# Save model
 model.save("qa_model.pkl")
 model2 = NeuralNetwork.load("qa_model.pkl")
 
+# Evaluate
 for i in range(len(test_questions)):
     print(f"Q: {test_questions[i]}")
-    predictions = model2.generate([test_questions[i]],temperature=0.3)
-    predicted_index = np.argmax(predictions)
+    prediction = model2.predict_answer(test_questions[i], return_probs=True)
+    predicted_index = np.argmax(prediction)
     answer = le.inverse_transform([predicted_index])[0]
     print(f"P: {answer}")
-    print(f"A: {test_answers[i]}") # Changed to test_answers for correct comparison
+    print(f"A: {test_answers[i]}")
     print()
