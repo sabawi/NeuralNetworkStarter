@@ -2,6 +2,7 @@ import json
 import pandas as pd
 from datasets import load_dataset
 import sys
+import re
 from neural_network2 import NeuralNetwork  # Your fixed implementation
 
 # Setting model name:
@@ -60,6 +61,39 @@ def print_model_hyperparameters(model):
     if hasattr(model, "embed_dim"):
         print(f"Embed Dim: {model.embed_dim}")
         
+def chunk_text_into_sentences(text, max_length=1024):
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    chunks = []
+    
+    for sentence in sentences:
+        if len(sentence) > max_length:
+            sub_chunks = [sentence[i:i+max_length] for i in range(0, len(sentence), max_length)]
+            chunks.extend(sub_chunks)
+        else:
+            chunks.append(sentence)
+    
+    return [[chunk] for chunk in chunks]
+
+# Example usage
+# json_output = json.dumps(chunk_text_into_sentences(conversations), indent=2)
+
+
+def load_from_local_file(file_path):
+    """Loads text conversations from a local file."""
+    try:
+        with open(file_path, 'r') as file:
+            conversations = file.read().splitlines()
+    except FileNotFoundError:
+        print(f"File not found: {file_path}")
+        return None
+        
+    # Chunk text into sentences 
+    # sequences_in_file = chunk_text_into_sentences(conversations)
+    # return sequences_in_file
+    return conversations
+    
+    
+        
     
     
 def load_text_conversations_data(hugging_face_dataset_name = "roskoN/dailydialog"):
@@ -105,12 +139,20 @@ if __name__ == "__main__":
     # Ensure valid training data file
     training_data_file_name = ""
     
-    training_data_file_name = input("Enter the name of Hugging Face dataset file: ").strip()
-
-    # Load training data
-    training_data = load_text_conversations_data(training_data_file_name)
-    print(f"First Conversation : {training_data[0]}")
-    print(f"Last Conversation : {training_data[-1]}")
+    print("\tChoose Training Data Source: \n\t1-Local File\n\t2-Hugging Face Dataset\n\t3-Exit")
+    choice = input("Enter your choice: ").strip()
+    if choice == "2":
+        training_data_file_name = input("Enter the name of Hugging Face dataset file: ").strip()
+        # Load training data
+        training_data = load_text_conversations_data(training_data_file_name)
+        print(f"First Conversation : {training_data[0]}")
+        print(f"Last Conversation : {training_data[-1]}")
+    elif choice == "1":
+        training_data_file_name = input("Enter local file path : ").strip()
+        training_data = load_from_local_file(training_data_file_name)
+        print(f"First Conversation : {training_data[0]}")
+        print(f"Last Conversation : {training_data[-1]}")
+        
     if training_data is None:
         sys.exit("Failed to load training data.")
 

@@ -7,4 +7,4 @@ prompt = None
 while prompt != "/quit":
     prompt = input("Enter a prompt: ")
     if prompt != "/quit":
-        print(model.generate_response(prompt,  max_length=100,temperature=0.5))  # Predict 1000 characters after the 
+        print(model.generate(prompt,  max_length=100,temperature=1.0,stream=True))  # Predict 1000 characters after the 

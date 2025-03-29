@@ -1200,7 +1200,7 @@ class NeuralNetwork:
 
         return response        
         
-    def generate(self, prompt, max_length=30, temperature=1.0):
+    def generate(self, prompt, max_length=30, temperature=1.0, stream=False):
         """
         Improved text generation from a prompt - handles lists, arrays, and strings
         
@@ -1303,10 +1303,16 @@ class NeuralNetwork:
             # Stop if we generate a padding/end token
             if next_token == 0:
                 break
+            else:
+                if self.tokenizer and stream:
+                    print(self.tokenizer.decode(next_token, skip_special_tokens=True), end='',flush=True)
         
         # Convert token IDs back to text if input was text
         if return_text and self.tokenizer:
-            return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+            if stream:
+                return
+            else:
+                return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
         
         # Return as a Python list, not numpy array wrapped in str representations
         return [int(token) for token in generated_tokens]    
