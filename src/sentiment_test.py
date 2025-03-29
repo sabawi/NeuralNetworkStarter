@@ -6,7 +6,7 @@ import numpy as np
 if __name__ == "__main__":
     # Load the model
     model = NeuralNetwork.load("sentiment_model_simple.pkl")
-
+    model.enable_text_generation()
     # print(f"Model use_embedding: {model.use_embedding}")
     # print(f"Model tokenizer available: {model.tokenizer is not None}")
     # print(f"Model layer sizes: {model.layer_sizes}")
@@ -45,12 +45,6 @@ if __name__ == "__main__":
     # Get the corresponding class label
     print(f"\tPrediction for 'I really enjoyed this': {class_labels[predicted_class_index]}")
     
-    # Generate text
-    generated = model.generate("I really enjoyed this, this product is", max_length=20,temperature=0.5)
-    print(generated)
-    
-    # Find the index of the highest probability
-    predicted_class_index = np.argmax(generated)
     print(f"\tGenerated Text: I really enjoyed this, this product is {class_labels[predicted_class_index]}")
     
     #Prediction 2
@@ -62,13 +56,6 @@ if __name__ == "__main__":
     # Get the corresponding class label
     print(f"\tPrediction for 'I did not like this product': {class_labels[predicted_class_index]}")
     
-    # Generate text
-    generated = model.generate("I did not like this product", max_length=20,temperature=0.8)
-    print(generated)
-    
-    # Find the index of the highest probability
-    predicted_class_index = np.argmax(generated)
-
     # Get the corresponding class label
     predicted_class_label = class_labels[predicted_class_index]
 

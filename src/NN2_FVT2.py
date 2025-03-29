@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.datasets import make_moons
 from sklearn.model_selection import train_test_split
-from neural_network2 import NeuralNetwork
+from neural_network import NeuralNetwork
 
 
 def test_neural_network():
