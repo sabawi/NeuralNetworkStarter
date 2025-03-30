@@ -67,6 +67,23 @@ def print_model_hyperparameters(model):
         
     if hasattr(model, "embed_dim"):
         print(f"Embed Dim: {model.embed_dim}")
+    
+    if hasattr(model, "max_seq_length"):
+        print(f"Max Seq Length: {model.max_seq_length}")
+        
+    if hasattr(model, "tokenizer_name"):
+        print(f"Tokenizer Name: {model.tokenizer_name}")
+        
+    if hasattr(model, "use_attention"):
+        print(f"Use Attention: {model.use_attention}")
+        
+    if hasattr(model, "num_attention_heads"):
+        print(f"Num Attention Heads: {model.num_attention_heads}")
+        
+    if hasattr(model, "attention_dropout"):
+        print(f"Attention Dropout: {model.attention_dropout}")  
+        
+    
         
 def chunk_text_into_sentences(text, max_length=1024):
     sentences = re.split(r'(?<=[.!?])\s+', text)
@@ -99,8 +116,52 @@ def load_from_local_file(file_path):
     # return sequences_in_file
     return conversations
     
-    
+
+def load_sample_from_dailydialog(number_sequences=100):
+    """Loads a sample of text conversations from the DailyDialog dataset."""
+    try:
+        data = load_dataset("li2017dailydialog/daily_dialog")
+        # Convert dataset to pandas DataFrame for easier inspection
+        split = list(data.keys())[0]  # Use the first available split
+        df = data[split].to_pandas()
         
+        text_column = None
+        for col in df.columns:
+            if df[col].dtype == 'object':  # Look for textual data
+                text_column = col
+                break
+
+        if text_column:
+            print(f"\nUsing column '{text_column}' for text sequences.")
+            text_data = df[text_column].sample(number_sequences).dropna().astype(str).tolist()
+            combined_texts = []
+            temp_text = ""
+            
+            # random.shuffle(text_data)
+            print(f"Number of sequences: {len(text_data)}")
+            for text in text_data:
+                combined_texts.append(text.strip())
+                # if len(temp_text) + len(text) <= 128:
+                #     temp_text += " " + text
+                # else:
+                #     combined_texts.append(temp_text.strip())
+                #     temp_text = text
+            if temp_text:
+                combined_texts.append(temp_text.strip())
+            
+            print(f"Total sequences: {len(combined_texts)}")
+            
+            # print("\nGenerated Text Sequences :")
+            # for snippet in combined_texts:
+            #     print("\n---\n", snippet)
+        else:
+            print("\nNo suitable text column found in the dataset.")
+    except Exception as e:
+        print(f"An error occurred while loading the dataset: {e}")
+        return None
+    
+    return combined_texts
+
     
     
 def load_text_conversations_data(hugging_face_dataset_name = "roskoN/dailydialog"):
@@ -151,7 +212,8 @@ if __name__ == "__main__":
     if choice == "2":
         training_data_file_name = input("Enter the name of Hugging Face dataset file: ").strip()
         # Load training data
-        training_data = load_text_conversations_data(training_data_file_name)
+        # training_data = load_text_conversations_data(training_data_file_name)
+        training_data = load_sample_from_dailydialog(number_sequences=200)
         print(f"First Conversation : {training_data[0]}")
         print(f"Last Conversation : {training_data[-1]}")
     elif choice == "1":

@@ -2529,6 +2529,16 @@ class NeuralNetwork:
             with open(filepath, 'rb') as f:
                 model_data = pickle.load(f)
             
+            # Extract embedding parameters first
+            embedding_kwargs = {}
+            if 'use_embedding' in model_data and model_data['use_embedding']:
+                embedding_kwargs = {
+                    'vocab_size': model_data.get('vocab_size'),
+                    'embed_dim': model_data.get('embed_dim'),
+                    'max_seq_length': model_data.get('max_seq_length')
+                }
+
+            
             # Create a new instance with minimal initialization
             # Include attention parameters in initialization if available
             attention_kwargs = {}
@@ -2556,6 +2566,7 @@ class NeuralNetwork:
                 dropout_rate=model_data['dropout_rate'],
                 activation_functions=model_data['activation_functions'],
                 use_embedding=model_data['use_embedding'],
+                **embedding_kwargs,  # Include embedding parameters
                 **attention_kwargs,
                 **pos_embedding_kwargs
             )
