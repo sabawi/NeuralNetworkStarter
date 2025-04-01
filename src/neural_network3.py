@@ -1003,52 +1003,160 @@ class NeuralNetwork:
         # Call the standard training method with the processed sequences
         return self.train_language_model(processed_sequences, epochs=epochs)
     
-    def train_language_model(self, text_sequences, epochs=None, validation_sequences=None, verbose=True):
+    def train_language_model(self, text_sequences, epochs=None, validation_sequences=None, 
+                        stride=None, verbose=True, checkpoint_dir="checkpoints", 
+                        checkpoint_interval=10, resume_from=None, save_best_only=True,
+                        max_checkpoints=3, cleanup_on_completion=True):
         """
-        Improved training method with learning rate scheduling
+        Improved training method with learning rate scheduling and smart checkpointing
         
         Args:
-            text_sequences: List of token ID sequences or text strings
+            text_sequences: List of text strings (not tokenized) 
+            epochs: Number of training epochs (defaults to self.epochs)
             validation_sequences: Optional validation sequences
+            stride: Stride for chunking long sequences
             verbose: Whether to log training progress
+            checkpoint_dir: Directory to save checkpoints
+            checkpoint_interval: Save checkpoint every N epochs
+            resume_from: Optional checkpoint path to resume training from
+            save_best_only: Whether to save only the best model based on validation loss
+            max_checkpoints: Maximum number of regular checkpoints to keep (oldest will be deleted)
+            cleanup_on_completion: Whether to delete all regular checkpoints and keep only final/best model
             
         Returns:
             Training losses
         """
-        # Reset training metrics
-        self.training_losses = []
-        self.validation_metrics = []
+        import os
+        import datetime
+        import glob
         
+        # Function to get all checkpoints for the current run
+        def get_checkpoints(pattern):
+            if checkpoint_dir:
+                return sorted(glob.glob(os.path.join(checkpoint_dir, pattern)))
+            return []
+        
+        # Function to prune old checkpoints
+        def prune_checkpoints(pattern, keep=max_checkpoints):
+            if not checkpoint_dir or keep <= 0:
+                return
+                
+            checkpoints = get_checkpoints(pattern)
+            if len(checkpoints) > keep:
+                # Delete oldest checkpoints
+                for old_checkpoint in checkpoints[:-keep]:
+                    try:
+                        os.remove(old_checkpoint)
+                        if verbose:
+                            logging.info(f"Pruned old checkpoint: {os.path.basename(old_checkpoint)}")
+                    except Exception as e:
+                        logging.warning(f"Failed to remove old checkpoint {old_checkpoint}: {e}")
+        
+        # Set epochs default if not provided
         if epochs is None:
             epochs = self.epochs
+            
+        # Create checkpoint directory if it doesn't exist
+        if checkpoint_dir and not os.path.exists(checkpoint_dir):
+            os.makedirs(checkpoint_dir)
         
-        if verbose:
-            logging.info(f"Training language model on {len(text_sequences)} sequences for {epochs} epochs")
+        # Variables for training tracking
+        start_epoch = 0
+        best_loss = float('inf')
+        best_model_path = None
+        patience_counter = 0
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Check if input consists of strings or token IDs
+        # Generate a unique run ID to identify checkpoints from this training run
+        run_id = f"run_{timestamp}"
+        
+        # Load from checkpoint if resuming
+        if resume_from and os.path.exists(resume_from):
+            if verbose:
+                logging.info(f"Loading checkpoint from {resume_from}")
+            
+            checkpoint = self.load(resume_from)
+            if checkpoint:
+                # Transfer model parameters
+                self.weights = checkpoint.weights
+                self.biases = checkpoint.biases
+                
+                # Transfer attention parameters if they exist
+                if hasattr(checkpoint, 'query_projection') and hasattr(self, 'query_projection'):
+                    self.query_projection = checkpoint.query_projection
+                    self.key_projection = checkpoint.key_projection
+                    self.value_projection = checkpoint.value_projection
+                    self.output_projection = checkpoint.output_projection
+                    self.query_bias = checkpoint.query_bias
+                    self.key_bias = checkpoint.key_bias
+                    self.value_bias = checkpoint.value_bias
+                    self.output_bias = checkpoint.output_bias
+                
+                # Transfer layer norm parameters if they exist
+                if hasattr(checkpoint, 'attention_norm_scale') and hasattr(self, 'attention_norm_scale'):
+                    self.attention_norm_scale = checkpoint.attention_norm_scale
+                    self.attention_norm_bias = checkpoint.attention_norm_bias
+                    self.ffn_norm_scale = checkpoint.ffn_norm_scale
+                    self.ffn_norm_bias = checkpoint.ffn_norm_bias
+                
+                # Transfer training state
+                if hasattr(checkpoint, 'training_losses'):
+                    self.training_losses = checkpoint.training_losses
+                    start_epoch = len(self.training_losses)
+                
+                # Transfer validation state
+                if hasattr(checkpoint, 'validation_metrics'):
+                    self.validation_metrics = checkpoint.validation_metrics
+                    if self.validation_metrics:
+                        best_loss = min(self.validation_metrics)
+                
+                # Transfer optimizer state (for Adam)
+                if hasattr(checkpoint, 'optimizer') and self.optimizer_name == 'adam':
+                    self.optimizer.learning_rate = checkpoint.optimizer.learning_rate
+                    self.optimizer.beta1 = checkpoint.optimizer.beta1
+                    self.optimizer.beta2 = checkpoint.optimizer.beta2
+                    self.optimizer.epsilon = checkpoint.optimizer.epsilon
+                    self.optimizer.m = checkpoint.optimizer.m
+                    self.optimizer.v = checkpoint.optimizer.v
+                    self.optimizer.t = checkpoint.optimizer.t
+                
+                if verbose:
+                    logging.info(f"Resuming training from epoch {start_epoch + 1}")
+        else:
+            # Reset metrics for fresh training
+            self.training_losses = []
+            self.validation_metrics = []
+        
+        # Reset patience counter if starting fresh
+        if start_epoch == 0:
+            patience_counter = 0
+        
+        # Configure chunking parameters
+        if stride is None and self.max_seq_length:
+            stride = int(self.max_seq_length * 0.75)  # Default: 75% overlap
+        
+        # Check input type
         input_is_strings = isinstance(text_sequences[0], str)
         
-        # Process input sequences based on type
-        processed_sequences = []
+        # Process and chunk sequences
+        chunked_sequences = []
         
         if input_is_strings:
-            # Input is strings, need to tokenize
-            if not self.tokenizer:
-                raise ValueError("Cannot train on text strings without a tokenizer")
-            
-            # Tokenize all sequences
-            tokenized = self.tokenize(text_sequences, add_special_tokens=True)
-            input_ids = tokenized['input_ids']
-            attention_masks = tokenized['attention_mask']
-            
-            # Convert to list of token ID lists
-            for i in range(len(text_sequences)):
-                # Extract non-padding tokens
-                valid_tokens = []
-                for j in range(len(input_ids[i])):
-                    if attention_masks[i][j] > 0:
-                        valid_tokens.append(int(input_ids[i][j]))
-                processed_sequences.append(valid_tokens)
+            for text in text_sequences:
+                # Tokenize full text
+                tokens = self.tokenizer.encode(text, add_special_tokens=False)
+                
+                # If already short enough, add as-is
+                if len(tokens) <= self.max_seq_length - 2:  # Space for special tokens
+                    chunked_sequences.append(tokens)
+                    continue
+                    
+                # Create overlapping chunks for long sequences
+                for i in range(0, len(tokens), stride):
+                    chunk = tokens[i:i + self.max_seq_length - 2]
+                    if len(chunk) > 20:  # Skip tiny chunks
+                        chunked_sequences.append(chunk)
+                        
         else:
             # For token ID inputs, add special tokens manually
             processed_sequences = []
@@ -1059,16 +1167,19 @@ class NeuralNetwork:
                 if len(processed_seq) > self.max_seq_length:
                     processed_seq = processed_seq[:self.max_seq_length]
                 processed_sequences.append(processed_seq)
+            
+            # Use processed sequences for the rest of the function
+            chunked_sequences = processed_sequences
         
         # Prepare the sequences
-        max_seq_length = self.max_seq_length or max(len(seq) for seq in processed_sequences)
+        max_seq_length = self.max_seq_length or max(len(seq) for seq in chunked_sequences)
         
         # Pad sequences and create targets
         padded_sequences = []
         targets = []
         attention_masks = []
         
-        for seq in processed_sequences:
+        for seq in chunked_sequences:
             # Ensure sequence isn't too long
             if len(seq) > max_seq_length:
                 seq = seq[:max_seq_length]
@@ -1118,18 +1229,16 @@ class NeuralNetwork:
         targets = np.array(targets)
         attention_masks = np.array(attention_masks)
         
-        # Track best metrics for early stopping
-        best_loss = float('inf')
-        patience = 5
-        patience_counter = 0
+        # Initial learning rate
+        initial_lr = self.learning_rate
+        
+        # List to track checkpoint files created during this run
+        current_run_checkpoints = []
         
         # Training loop
         self.training = True
         
-        # Initial learning rate
-        initial_lr = self.learning_rate
-        
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, epochs):
             # Apply learning rate schedule - reduce learning rate over time
             # This helps with numerical stability in later epochs
             if epoch > 30:
@@ -1182,6 +1291,7 @@ class NeuralNetwork:
                     self.training_losses.append(float('inf'))
             
             # Validation if provided
+            val_loss = None
             if val_processed:
                 # Process validation data
                 val_padded_sequences = []
@@ -1221,13 +1331,26 @@ class NeuralNetwork:
                 val_loss = self.calculate_loss(val_outputs, val_targets, val_attention_masks)
                 self.validation_metrics.append(val_loss)
                 
-                # Early stopping check
+                # Save best model if needed
                 if val_loss < best_loss:
                     best_loss = val_loss
                     patience_counter = 0
+                    
+                    # Save best model
+                    if checkpoint_dir and save_best_only:
+                        best_model_path = os.path.join(
+                            checkpoint_dir, 
+                            f"best_model_{run_id}_epoch_{epoch+1}_val_{val_loss:.4f}.pkl"
+                        )
+                        if self.save(best_model_path):
+                            if verbose:
+                                logging.info(f"Saved new best model with validation loss: {val_loss:.6f}")
+                            
+                            # Keep track of this file for final cleanup
+                            current_run_checkpoints.append(best_model_path)
                 else:
                     patience_counter += 1
-                    if patience_counter >= patience:
+                    if patience_counter >= 5:  # Early stopping patience
                         if verbose:
                             logging.info(f"Early stopping at epoch {epoch+1}")
                         break
@@ -1237,16 +1360,69 @@ class NeuralNetwork:
                 
                 if verbose and (epoch % 5 == 0 or epoch == epochs - 1):
                     logging.info(f"Epoch {epoch+1}/{epochs}: Train Loss = {self.training_losses[-1]:.6f}, "
-                              f"Val Loss = {val_loss:.6f}, LR = {self.learning_rate:.6f}")
+                            f"Val Loss = {val_loss:.6f}, LR = {self.learning_rate:.6f}")
             else:
                 if verbose and (epoch % 5 == 0 or epoch == epochs - 1):
                     logging.info(f"Epoch {epoch+1}/{epochs}: Loss = {self.training_losses[-1]:.6f}, "
-                              f"LR = {self.learning_rate:.6f}")
+                            f"LR = {self.learning_rate:.6f}")
+            
+            # Regular checkpoint saving
+            if checkpoint_dir and checkpoint_interval > 0 and (epoch + 1) % checkpoint_interval == 0:
+                # Don't save regular checkpoint if we're only saving best models and we have validation data
+                if not (save_best_only and val_processed):
+                    checkpoint_path = os.path.join(
+                        checkpoint_dir, 
+                        f"checkpoint_{run_id}_epoch_{epoch+1}.pkl"
+                    )
+                    if self.save(checkpoint_path):
+                        if verbose:
+                            logging.info(f"Saved checkpoint at epoch {epoch+1}")
+                        
+                        # Keep track of this file for final cleanup
+                        current_run_checkpoints.append(checkpoint_path)
+                        
+                        # Prune old checkpoints if needed
+                        prune_checkpoints(f"checkpoint_{run_id}_*.pkl")
+        
+        # Save final model if not already saving the best
+        final_path = None
+        if checkpoint_dir and not (save_best_only and val_processed and best_model_path):
+            final_path = os.path.join(
+                checkpoint_dir, 
+                f"final_model_{run_id}.pkl"
+            )
+            if self.save(final_path):
+                if verbose:
+                    logging.info(f"Saved final model")
+                current_run_checkpoints.append(final_path)
+        
+        # Clean up intermediate checkpoints if requested
+        if cleanup_on_completion and checkpoint_dir:
+            # Identify the model to keep
+            model_to_keep = None
+            if save_best_only and best_model_path:
+                model_to_keep = best_model_path
+            elif final_path:
+                model_to_keep = final_path
+                
+            # Remove all other checkpoints from this run
+            if model_to_keep:
+                for checkpoint_path in current_run_checkpoints:
+                    if checkpoint_path != model_to_keep:
+                        try:
+                            os.remove(checkpoint_path)
+                            if verbose:
+                                logging.info(f"Cleaned up checkpoint: {os.path.basename(checkpoint_path)}")
+                        except Exception as e:
+                            logging.warning(f"Failed to remove checkpoint {checkpoint_path}: {e}")
         
         # Set to evaluation mode
         self.training = False
         
         return self.training_losses
+    
+    # End of train_language_model()
+    # ###############################
     
     def enable_text_generation(self):
         """
@@ -1552,17 +1728,22 @@ class NeuralNetwork:
 
         return response        
         
-    def generate(self, prompt, max_length=30, temperature=1.0, stream=False):
+    def generate(self, prompt, max_length=30, temperature=1.0, num_return_sequences=1, 
+                use_top_k=0, top_p=1.0, stream=False):
         """
-        Improved text generation from a prompt - handles lists, arrays, and strings
+        Improved text generation with support for multiple sequences and sampling techniques
         
         Args:
             prompt: Text string, list of token IDs, or numpy array to start generation
             max_length: Maximum number of tokens to generate
-            temperature: Controls randomness (lower = more deterministic)
+            temperature: Controls randomness (lower = more deterministic, 0 = greedy)
+            num_return_sequences: Number of different sequences to generate (default: 1)
+            use_top_k: If > 0, use only top k tokens with highest probability (default: 0, disabled)
+            top_p: If < 1.0, use nucleus sampling to keep the cumulative probability <= top_p (default: 1.0, disabled)
+            stream: Whether to stream tokens to output during generation
             
         Returns:
-            Generated text if text was input, or token IDs if token IDs were input
+            List of generated sequences (either token IDs or text strings depending on input type)
         """
         if not self.is_generative:
             raise ValueError("Model not enabled for generation. Call enable_text_generation() first.")
@@ -1596,78 +1777,144 @@ class NeuralNetwork:
         if prompt.shape[1] > self.max_seq_length:
             prompt = prompt[:, :self.max_seq_length]
         
-        # Store the original prompt length
+        # Original prompt length for each sequence
         original_prompt_length = prompt.shape[1]
         
-        # Store generated tokens (start with the input tokens)
-        generated_tokens = list(prompt[0])
-        current_length = len(generated_tokens)
+        # Generate multiple sequences
+        all_generated_sequences = []
         
-        # Generate tokens one by one
-        for _ in range(max_length):
-            # Prepare current sequence for inference
-            current_sequence = np.array(generated_tokens).reshape(1, -1)
+        for seq_idx in range(num_return_sequences):
+            # Store generated tokens (start with the input tokens)
+            generated_tokens = list(prompt[0])
             
-            # Don't exceed max sequence length
-            if current_sequence.shape[1] > self.max_seq_length:
-                current_sequence = current_sequence[:, -self.max_seq_length:]
+            # Generate tokens one by one
+            for _ in range(max_length):
+                # Prepare current sequence for inference
+                current_sequence = np.array(generated_tokens).reshape(1, -1)
+                
+                # Don't exceed max sequence length
+                if current_sequence.shape[1] > self.max_seq_length:
+                    current_sequence = current_sequence[:, -self.max_seq_length:]
+                
+                # Pad if necessary
+                if current_sequence.shape[1] < self.max_seq_length:
+                    padding = np.zeros((1, self.max_seq_length - current_sequence.shape[1]), dtype=int)
+                    padded_sequence = np.concatenate([current_sequence, padding], axis=1)
+                else:
+                    padded_sequence = current_sequence
+                
+                # Create attention mask
+                attention_mask = np.zeros((1, self.max_seq_length), dtype=int)
+                attention_mask[0, :current_sequence.shape[1]] = 1
+                
+                # Forward pass to get next token probabilities
+                output = self.forward_propagation(padded_sequence, attention_mask)
+                
+                # Get probabilities for the last token position
+                next_token_logits = output[0, current_sequence.shape[1] - 1]
+                
+                # Temperature handling with special case for temperature=0 (greedy)
+                if temperature == 0:
+                    # Greedy decoding - just pick the most likely token
+                    next_token = np.argmax(next_token_logits)
+                else:
+                    # Apply temperature for controlling randomness
+                    if temperature != 1.0:
+                        # Convert probabilities to logits if needed
+                        if np.all(next_token_logits >= 0) and np.isclose(np.sum(next_token_logits), 1.0):
+                            # These are already probabilities
+                            logits = np.log(np.clip(next_token_logits, 1e-10, 1.0))
+                        else:
+                            # These are raw logits
+                            logits = next_token_logits
+                            
+                        # Apply temperature scaling
+                        logits = logits / max(temperature, 1e-10)  # Avoid division by zero
+                        
+                        # Convert to probabilities
+                        next_token_probs = softmax(logits)
+                    else:
+                        # Ensure we have probabilities
+                        if np.all(next_token_logits >= 0) and np.isclose(np.sum(next_token_logits), 1.0):
+                            next_token_probs = next_token_logits
+                        else:
+                            next_token_probs = softmax(next_token_logits)
+                    
+                    # Apply top-k filtering if specified
+                    if use_top_k > 0:
+                        # Get top k indices and their probabilities
+                        top_k_indices = np.argsort(next_token_probs)[-use_top_k:]
+                        top_k_probs = next_token_probs[top_k_indices]
+                        
+                        # Normalize probabilities
+                        top_k_probs = top_k_probs / np.sum(top_k_probs)
+                        
+                        # Create a new probability distribution
+                        filtered_probs = np.zeros_like(next_token_probs)
+                        filtered_probs[top_k_indices] = top_k_probs
+                        next_token_probs = filtered_probs
+                    
+                    # Apply nucleus (top-p) sampling if specified
+                    if top_p < 1.0:
+                        # Sort probabilities in descending order
+                        sorted_indices = np.argsort(next_token_probs)[::-1]
+                        sorted_probs = next_token_probs[sorted_indices]
+                        
+                        # Calculate cumulative probabilities
+                        cumulative_probs = np.cumsum(sorted_probs)
+                        
+                        # Find cutoff index for top-p
+                        cutoff_idx = np.argmax(cumulative_probs >= top_p) + 1
+                        
+                        # Set probabilities outside top-p to 0
+                        sorted_probs[cutoff_idx:] = 0
+                        
+                        # Renormalize probabilities
+                        sorted_probs = sorted_probs / np.sum(sorted_probs)
+                        
+                        # Reconstruct probability distribution
+                        filtered_probs = np.zeros_like(next_token_probs)
+                        filtered_probs[sorted_indices[:cutoff_idx]] = sorted_probs[:cutoff_idx]
+                        next_token_probs = filtered_probs
+                    
+                    # Sample next token from the filtered distribution
+                    try:
+                        # Ensure probabilities sum to 1
+                        if not np.isclose(np.sum(next_token_probs), 1.0):
+                            next_token_probs = next_token_probs / np.sum(next_token_probs)
+                            
+                        next_token = np.random.choice(self.vocab_size, p=next_token_probs)
+                    except ValueError as e:
+                        print(f"ValueError in sampling: {e}")
+                        print(f"Probabilities: min={np.min(next_token_probs)}, max={np.max(next_token_probs)}, sum={np.sum(next_token_probs)}")
+                        # Fallback to greedy selection
+                        next_token = np.argmax(next_token_probs)
+                
+                # Add to generated tokens
+                generated_tokens.append(next_token)
+                
+                # Stop if we generate a padding/end token
+                if next_token == 0 or (self.tokenizer and next_token == self.tokenizer.eos_token_id):
+                    break
+                elif self.tokenizer and stream:
+                    print(self.tokenizer.decode([next_token], skip_special_tokens=True), end='', flush=True)
             
-            # Pad if necessary
-            if current_sequence.shape[1] < self.max_seq_length:
-                padding = np.zeros((1, self.max_seq_length - current_sequence.shape[1]), dtype=int)
-                padded_sequence = np.concatenate([current_sequence, padding], axis=1)
-            else:
-                padded_sequence = current_sequence
-            
-            # Create attention mask
-            attention_mask = np.zeros((1, self.max_seq_length), dtype=int)
-            attention_mask[0, :current_sequence.shape[1]] = 1
-            
-            # Forward pass to get next token probabilities
-            output = self.forward_propagation(padded_sequence, attention_mask)
-            
-            # Get probabilities for the last token position
-            next_token_logits = output[0, current_sequence.shape[1] - 1]
-            
-            # Apply temperature for controlling randomness
-            if temperature != 1.0:
-                # Convert probabilities to logits
-                logits = np.log(np.clip(next_token_logits, 1e-10, 1.0))
-                # Apply temperature scaling
-                logits = logits / temperature
-                # Convert back to probabilities
-                next_token_probs = softmax(logits)
-            else:
-                next_token_probs = next_token_logits
-            
-            # Sample next token from the distribution
-            try:
-                next_token = np.random.choice(self.vocab_size, p=next_token_probs)
-            except ValueError:
-                print(f"ValueError: {next_token_probs}")
-                # Handle potential numerical issues with probability distribution
-                next_token_probs = np.ones(self.vocab_size) / self.vocab_size  # Fallback to uniform
-                next_token = np.random.choice(self.vocab_size, p=next_token_probs)
-            
-            # Add to generated tokens
-            generated_tokens.append(next_token)
-            
-            # Stop if we generate a padding/end token
-            if next_token == 0:
-                break
-            else:
-                if self.tokenizer and stream:
-                    print(self.tokenizer.decode(next_token, skip_special_tokens=True), end='',flush=True)
+            all_generated_sequences.append(generated_tokens)
         
         # Convert token IDs back to text if input was text
         if return_text and self.tokenizer:
             if stream:
-                return
+                return None
             else:
-                return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                return [self.tokenizer.decode(seq, skip_special_tokens=True) for seq in all_generated_sequences]
         
-        # Return as a Python list, not numpy array wrapped in str representations
-        return [int(token) for token in generated_tokens]    
+        # Return token IDs
+        if num_return_sequences == 1:
+            # For backward compatibility, return just the first sequence if only one was requested
+            return [int(token) for token in all_generated_sequences[0]]
+        else:
+            # Return list of lists for multiple sequences
+            return [[int(token) for token in seq] for seq in all_generated_sequences]   
    
    
     def process_large_text_file(self, prompt_file, response_file, batch_size=10):

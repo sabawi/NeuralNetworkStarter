@@ -96,7 +96,7 @@ def chunk_text_into_sentences(text, max_length=1024):
         else:
             chunks.append(sentence)
     
-    return [[chunk] for chunk in chunks]
+    return [chunk for chunk in chunks]
 
 # Example usage
 # json_output = json.dumps(chunk_text_into_sentences(conversations), indent=2)
@@ -140,7 +140,7 @@ def load_sample_from_dailydialog(number_sequences=100):
             # random.shuffle(text_data)
             print(f"Number of sequences: {len(text_data)}")
             for text in text_data:
-                combined_texts.append(text.strip())
+                combined_texts.append(text[0].strip())
                 # if len(temp_text) + len(text) <= 128:
                 #     temp_text += " " + text
                 # else:
@@ -188,6 +188,24 @@ def load_text_conversations_data(hugging_face_dataset_name = "roskoN/dailydialog
         print(f"An error occurred while loading the file: {e}")
         return None
 
+def load_user_entered_text():
+    """Prompt the user for a sequence of text conversations. Use it to train the model."""
+    try:
+        chunks = []
+                
+        data = input("Enter a text sequence to train the mode on: ")
+        if(len(data) > 128):
+            chunks = chunk_text_into_sentences(data)
+        else:
+            chunks = [data]
+            
+        print(f"\n\n**** Chunks: {chunks}")
+
+        return chunks
+    except Exception:
+        print(f"Exception in load_user_entered_text. e={e}")
+
+    
 if __name__ == "__main__":
     print("\t1-Continue training an existing model\n\t2-Create and train a new model\n\t3-Exit")
     choice = input("Enter your choice: ").strip()
@@ -207,13 +225,13 @@ if __name__ == "__main__":
     # Ensure valid training data file
     training_data_file_name = ""
     
-    print("\tChoose Training Data Source: \n\t1-Local File\n\t2-Hugging Face Dataset\n\t3-Exit")
+    print("\tChoose Training Data Source: \n\t1-Local File\n\t2-Hugging Face Dataset\n\t3-User entered text sequences\n\t4-Exit")
     choice = input("Enter your choice: ").strip()
     if choice == "2":
         training_data_file_name = input("Enter the name of Hugging Face dataset file: ").strip()
         # Load training data
         # training_data = load_text_conversations_data(training_data_file_name)
-        training_data = load_sample_from_dailydialog(number_sequences=200)
+        training_data = load_sample_from_dailydialog(number_sequences=100)
         print(f"First Conversation : {training_data[0]}")
         print(f"Last Conversation : {training_data[-1]}")
     elif choice == "1":
@@ -221,7 +239,12 @@ if __name__ == "__main__":
         training_data = load_from_local_file(training_data_file_name)
         print(f"First Conversation : {training_data[0]}")
         print(f"Last Conversation : {training_data[-1]}")
-        
+    elif choice == "3": 
+        training_data = load_user_entered_text()
+        print(f"First sequence : {training_data[0]}")
+        print(f"Last sequence : {training_data[-1]}")
+    elif choice == "4":
+        sys.exit()
     if training_data is None:
         sys.exit("Failed to load training data.")
 
@@ -281,9 +304,21 @@ if __name__ == "__main__":
     # Train in batches
     for i in range(start_sequence, sequences_in_file, batch_size):
         batch_data = training_data[i:i+batch_size]
+        print(f"Batch {i}-{(i+batch_size)} of {sequences_in_file} sequences:\n\tData--> {batch_data}\n")
         try:
             print(f"\tTraining from {i} to {min(i+batch_size, sequences_in_file)} of {sequences_in_file} sequences")
-            model.train_language_model(batch_data,epochs=100)
+            model.train_language_model(
+                batch_data,
+                epochs=100,
+                verbose=True,
+                validation_sequences=None,
+                stride=None,
+                checkpoint_dir= f"{model_name}_checkpoints",
+                checkpoint_interval=10,
+                max_checkpoints=3,           # Keep only 3 most recent checkpoints during training
+                cleanup_on_completion=True,   # Remove all but the final checkpoint when done
+                save_best_only=True
+                )
             print(f"\tTraining of {batch_size} sequences completed successfully")
             
             # Save the model
