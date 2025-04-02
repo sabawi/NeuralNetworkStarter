@@ -1809,10 +1809,10 @@ class NeuralNetwork:
                 
                 # Forward pass to get next token probabilities
                 output = self.forward_propagation(padded_sequence, attention_mask)
-                
+                # print(f"Output shape: {output[0].shape}")
                 # Get probabilities for the last token position
                 next_token_logits = output[0, current_sequence.shape[1] - 1]
-                
+                # print(f"Next token logits shape: {next_token_logits.shape}")
                 # Temperature handling with special case for temperature=0 (greedy)
                 if temperature == 0:
                     # Greedy decoding - just pick the most likely token
